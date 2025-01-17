@@ -1,6 +1,8 @@
 import json
 import os
 import logging
+from aiogram import Bot
+from dotenv import load_dotenv
 
 # Указываем абсолютный путь к файлу orders.json
 ORDERS_FILE_PATH = os.path.join(os.path.dirname(__file__), 'orders.json')
@@ -9,6 +11,24 @@ ORDERS_FILE_PATH = os.path.join(os.path.dirname(__file__), 'orders.json')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 logging.info(f"Используемый путь к файлу: {ORDERS_FILE_PATH}")
+
+# Загрузка переменных окружения
+load_dotenv()
+
+# Получение токена бота и ID админа
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = os.getenv("ADMIN_ID")
+if not BOT_TOKEN or not ADMIN_IDS:
+    raise ValueError("Токен бота или ID админа не найден. Убедитесь, что переменные окружения BOT_TOKEN и ADMIN_ID заданы.")
+
+# Преобразование строки с ID админов в список целых чисел
+if ADMIN_IDS:
+    ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS.split(',')]
+else:
+    ADMIN_IDS = []
+
+# Создаём экземпляр Bot
+bot = Bot(token=BOT_TOKEN)
 
 def load_orders() -> list:
     """Загружает заявки из JSON-файла."""
@@ -31,20 +51,37 @@ def save_orders(data: list):
         json.dump(data, file, indent=4, ensure_ascii=False)
     logging.info("Заявки успешно сохранены в файл orders.json")
 
-def save_order_to_json(order_data: dict) -> int:
-    """Сохраняет заявку на выезд в JSON и возвращает её ID."""
-    data = load_orders()
-    if not isinstance(data, list):
-        logging.error("Не удалось загрузить заявки: данные не в правильном формате.")
-        return -1
+async def notify_admins(order_data):
+    message_text = (
+        f"Новая заявка #{order_data['id']}:\n"
+        f"Имя: {order_data['full_name']}\n"
+        f"Адрес: {order_data['address']}\n"
+        f"Телефон: {order_data['phone_number']}\n"
+        f"Причина обращения: {order_data['reason']}\n"
+        f"Статус: {order_data['status']}"
+    )
+    for admin_id in ADMIN_IDS:
+        await bot.send_message(admin_id, message_text)
 
-    next_id = max([order.get("id", 0) for order in data], default=0) + 1
-    order_data["id"] = next_id
-    order_data["status"] = "Ожидает обработки"  # Устанавливаем статус по умолчанию
-    data.append(order_data)
-    save_orders(data)
-    logging.info(f"Заявка #{next_id} успешно сохранена.")
-    return next_id
+async def save_order_to_json(order_data: dict) -> int:
+    """Сохраняет заявку на выезд в JSON и уведомляет администраторов."""
+    logging.info(f"Сохранение заявки: {order_data}")
+    orders = load_orders()
+    if orders:
+        last_order_id = orders[-1].get("id", 0)
+        order_data["id"] = last_order_id + 1
+    else:
+        order_data["id"] = 1
+
+    orders.append(order_data)
+    logging.info(f"Обновленный список заявок: {orders}")
+    save_orders(orders)
+    logging.info(f"Заявка #{order_data['id']} успешно сохранена.")
+
+    # Уведомление администраторов
+    await notify_admins(order_data)
+
+    return order_data["id"]
 
 def get_order_status(order_id: int) -> str:
     """Возвращает статус заявки по её ID."""
@@ -110,3 +147,32 @@ def get_order_data_by_id(request_id):
         if order["id"] == request_id:
             return order
     return None
+
+def get_new_orders_list() -> str:
+    """Возвращает список новых заявок."""
+    orders = load_orders()
+    if not orders:
+        return "Нет новых заявок."
+
+    response_text = "Список новых заявок:\n\n"
+    for order in orders:
+        request_id = order.get('id', 'Не указан')
+        full_name = order.get('full_name', 'Не указано')
+        address = order.get('address', 'Не указан')
+        phone_number = order.get('phone_number', 'Не указан')
+        reason = order.get('reason', 'Не указана')
+        status = order.get('status', 'Ожидает обработки')
+
+        if request_id == 'Не указан':
+            logging.warning(f"Заявка без ID: {order}")
+
+        response_text += (
+            f"ID заявки: {request_id}\n"
+            f"ФИО: {full_name}\n"
+            f"Адрес: {address}\n"
+            f"Телефон: {phone_number}\n"
+            f"Причина: {reason}\n"
+            f"Статус: {status}\n\n"
+        )
+
+    return response_text
