@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, types, F, Router, BaseMiddleware
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, TelegramObject
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, TelegramObject, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv, set_key
 from datetime import datetime
 
@@ -301,11 +301,11 @@ async def process_reason(message: Message, state: FSMContext):
         f"Адрес: {order_data['address']}\n"
         f"Телефон: {order_data['phone_number']}\n"
         f"Причина обращения: {order_data['reason']}\n"
-        f"Статус: {order_data['status']}"
+        f"Статус: {order_data['status']}\n"
+        "Вашей заявкой в данный момент занимаются, ожидайте звонка."
     )
     await message.answer("Выберите действие из меню:", reply_markup=main_menu_keyboard())
     await state.clear()
-
 
 # Обработка кнопки "Назад" в меню услуг
 @router.callback_query(F.data == "back_to_main")
@@ -355,6 +355,12 @@ async def status_processed(callback_query: CallbackQuery, state: FSMContext):
                 f"Статус: {order['status']}"
             )
             await callback_query.message.answer("Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
+            
+            # Уведомление пользователя и предложение оставить отзыв
+            feedback_button = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Оставить отзыв", callback_data=f"leave_feedback:{request_id}")]
+            ])
+            await bot.send_message(order["user_id"], "Ваша заявка завершена. Пожалуйста, оставьте отзыв.", reply_markup=feedback_button)
             break
     else:
         await callback_query.message.edit_text(f"Не удалось изменить статус заявки #{request_id}.")
@@ -560,28 +566,18 @@ async def process_cancel_request_id(message: Message, state: FSMContext):
     await state.clear()
 
 # Обработка кнопки "Оставить отзыв"
-@router.callback_query(F.data == "leave_feedback")
+@router.callback_query(F.data.startswith("leave_feedback:"))
 async def leave_feedback(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите номер Вашей ID Заявки для оставления отзыва:")
-    await state.set_state(FeedbackForm.request_id)
-
-@router.message(StateFilter(FeedbackForm.request_id))
-async def process_feedback_request_id(message: Message, state: FSMContext):
-    request_id = int(message.text.strip())
-    if not get_order_data_by_id(request_id):
-        await message.answer("Неверный ID заявки. Пожалуйста, введите корректный номер ID.")
-        await state.clear()
-        return
-    
+    request_id = int(callback_query.data.split(":")[1])
     await state.update_data(request_id=request_id)
-    await message.answer("Введите ваш отзыв:")
+    await callback_query.message.edit_text("Введите ваш отзыв:")
     await state.set_state(FeedbackForm.feedback)
 
 @router.message(StateFilter(FeedbackForm.feedback))
 async def process_feedback(message: Message, state: FSMContext):
     user_data = await state.get_data()
     request_id = user_data['request_id']
-    feedback = message.text
+    feedback = sanitize_input(message.text)
 
     # Сохранение отзыва в JSON-файл
     save_feedback_to_json(request_id, feedback)
@@ -615,14 +611,19 @@ async def process_address(message: Message, state: FSMContext):
     await state.set_state(OrderForm.phone_number)
 
 # Обновление статуса заявки и уведомление пользователя
-@router.callback_query(F.data == "update_status")
+@router.callback_query(F.data.startswith("update_status:"))
 async def update_status(callback_query: CallbackQuery, state: FSMContext):
-    request_id = int(callback_query.data.split(":")[1])
-    new_status = callback_query.data.split(":")[2]
+    data = callback_query.data.split(":")
+    request_id = int(data[1])
+    new_status = data[2]
     order = update_order_status(request_id, new_status)
     if order:
-        await notify_user(bot, order["user_id"], f"Статус вашей заявки #{request_id} обновлен на '{new_status}'.")
+        await notify_user(bot, order["id"], f"Статус вашей заявки #{request_id} обновлен на '{new_status}'.")
         await callback_query.message.answer(f"Статус заявки #{request_id} успешно обновлен на '{new_status}'.")
+        
+        if new_status == "Обработано":
+            feedback_button = InlineKeyboardMarkup().add(InlineKeyboardButton("Оставить отзыв", callback_data="leave_feedback"))
+            await bot.send_message(order["id"], "Ваша заявка завершена. Пожалуйста, оставьте отзыв.", reply_markup=feedback_button)
     else:
         await callback_query.message.answer("Заявка с таким ID не найдена.")
 
