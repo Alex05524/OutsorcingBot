@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 def start_button_keyboard(admin=False):
     buttons = [
@@ -20,14 +20,21 @@ def main_menu_keyboard(admin=False):
         [InlineKeyboardButton(text="✏️ Редактировать заявку", callback_data="edit_request")],
         [InlineKeyboardButton(text="❓ FAQ", callback_data="show_faq")]
     ]
-
+    if admin:
+        buttons.append([InlineKeyboardButton(text="📊 Аналитика заявок", callback_data="show_stats")])
+        buttons.append([InlineKeyboardButton(text="🔧 Панель администратора", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    
 def services_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    buttons = [
         [InlineKeyboardButton(text="Компьютерная помощь", callback_data="service_1")],
         [InlineKeyboardButton(text="Предложения по монтажным работам", callback_data="service_2")],
         [InlineKeyboardButton(text="Заказ на выезд", callback_data="service_3")],
+        [InlineKeyboardButton(text="Отменить заявку", callback_data="cancel_request")],
+        [InlineKeyboardButton(text="Оставить отзыв", callback_data="leave_feedback")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
-    ])
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def edit_request_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -49,5 +56,5 @@ def remove_admin_keyboard(admin_ids):
     buttons = []
     for admin_id in admin_ids:
         buttons.append([InlineKeyboardButton(text=f"Удалить администратора {admin_id}", callback_data=f"confirm_remove_admin_{admin_id}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_start")])
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_start")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)

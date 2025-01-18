@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+from datetime import datetime
 from aiogram import Bot
 from dotenv import load_dotenv
 
@@ -30,7 +31,7 @@ else:
 # Создаём экземпляр Bot
 bot = Bot(token=BOT_TOKEN)
 
-def load_orders() -> list:
+def load_orders():
     """Загружает заявки из JSON-файла."""
     logging.info(f"Загрузка заявок из файла: {ORDERS_FILE_PATH}")
     if os.path.exists(ORDERS_FILE_PATH):
@@ -51,7 +52,16 @@ def save_orders(data: list):
         json.dump(data, file, indent=4, ensure_ascii=False)
     logging.info("Заявки успешно сохранены в файл orders.json")
 
-async def notify_admins(order_data):
+async def notify_admins(bot: Bot, message: str):
+    admin_ids_str = os.getenv("ADMIN_ID")
+    if admin_ids_str:
+        admin_ids = [int(admin_id.strip()) for admin_id in admin_ids_str.split(',')]
+        for admin_id in admin_ids:
+            await bot.send_message(admin_id, message)
+    else:
+        logging.warning("Переменная окружения ADMIN_ID не задана.")
+
+async def notify_new_order(bot: Bot, order_data):
     message_text = (
         f"Новая заявка #{order_data['id']}:\n"
         f"Имя: {order_data['full_name']}\n"
@@ -60,10 +70,20 @@ async def notify_admins(order_data):
         f"Причина обращения: {order_data['reason']}\n"
         f"Статус: {order_data['status']}"
     )
-    for admin_id in ADMIN_IDS:
-        await bot.send_message(admin_id, message_text)
+    await notify_admins(bot, message_text)
 
-async def save_order_to_json(order_data: dict) -> int:
+async def notify_order_update(bot: Bot, order_data):
+    message_text = (
+        f"Обновление заявки #{order_data['id']}:\n"
+        f"Имя: {order_data['full_name']}\n"
+        f"Адрес: {order_data['address']}\n"
+        f"Телефон: {order_data['phone_number']}\n"
+        f"Причина обращения: {order_data['reason']}\n"
+        f"Новый статус: {order_data['status']}"
+    )
+    await notify_admins(bot, message_text)
+
+async def save_order_to_json(bot: Bot, order_data: dict) -> int:
     """Сохраняет заявку на выезд в JSON и уведомляет администраторов."""
     logging.info(f"Сохранение заявки: {order_data}")
     orders = load_orders()
@@ -73,15 +93,25 @@ async def save_order_to_json(order_data: dict) -> int:
     else:
         order_data["id"] = 1
 
+    # Инициализация истории, если отсутствует
+    if "history" not in order_data:
+        order_data["history"] = []
+
     orders.append(order_data)
     logging.info(f"Обновленный список заявок: {orders}")
     save_orders(orders)
     logging.info(f"Заявка #{order_data['id']} успешно сохранена.")
 
     # Уведомление администраторов
-    await notify_admins(order_data)
-
+    await notify_new_order(bot, order_data)
     return order_data["id"]
+
+def cancel_order(request_id: int):
+    """Удаляет заявку из JSON-файла по ID."""
+    orders = load_orders()
+    orders = [order for order in orders if order["id"] != request_id]
+    save_orders(orders)
+    logging.info(f"Заявка с ID {request_id} была удалена.")
 
 def get_order_status(order_id: int) -> str:
     """Возвращает статус заявки по её ID."""
@@ -128,20 +158,23 @@ def update_request(request_id, new_data):
             return True
     return False
 
-def update_order_status(order_id: int, status: str) -> bool:
-    """Обновляет статус заявки по её ID."""
+def update_order_status(request_id: int, new_status: str):
+    """Обновляет статус заявки и сохраняет изменения в JSON-файл."""
     orders = load_orders()
     for order in orders:
-        if order["id"] == order_id:
-            order["status"] = status
+        if order["id"] == request_id:
+            if "history" not in order:
+                order["history"] = []
+            order["status"] = new_status
+            order["history"].append({'timestamp': datetime.now().isoformat(), 'status': new_status})
             save_orders(orders)
-            logging.info(f"Статус заявки #{order_id} успешно изменен на '{status}'.")
-            return True
-    logging.info(f"Заявка #{order_id} не найдена для обновления статуса.")
-    return False
+            logging.info(f"Статус заявки #{request_id} обновлен на '{new_status}'.")
+            return order
+    logging.warning(f"Заявка с ID {request_id} не найдена.")
+    return None
 
-def get_order_data_by_id(request_id):
-    """Возвращает данные заявки по её ID."""
+def get_order_data_by_id(request_id: int):
+    """Возвращает данные заявки по ID."""
     orders = load_orders()
     for order in orders:
         if order["id"] == request_id:
@@ -176,3 +209,21 @@ def get_new_orders_list() -> str:
         )
 
     return response_text
+
+def save_feedback_to_json(request_id: int, feedback: str):
+    """Сохраняет отзыв пользователя в JSON-файл."""
+    orders = load_orders()
+    for order in orders:
+        if order["id"] == request_id:
+            if "feedback" not in order:
+                order["feedback"] = []
+            order["feedback"].append({'timestamp': datetime.now().isoformat(), 'feedback': feedback})
+            save_orders(orders)
+            logging.info(f"Отзыв для заявки #{request_id} успешно сохранен.")
+            return order
+    logging.warning(f"Заявка с ID {request_id} не найдена.")
+    return None
+
+async def notify_user(bot: Bot, user_id: int, message: str):
+    """Отправляет уведомление пользователю."""
+    await bot.send_message(user_id, message)
