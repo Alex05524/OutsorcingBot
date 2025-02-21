@@ -8,13 +8,13 @@ from aiogram import Bot, Dispatcher, types, F, Router, BaseMiddleware
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, TelegramObject, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, TelegramObject, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
 from dotenv import load_dotenv, set_key
 from datetime import datetime
 
 from states import OrderForm, StatusForm
-from keyboards import remove_admin_keyboard, start_button_keyboard, main_menu_keyboard, edit_request_keyboard, services_keyboard, admin_panel_keyboard
-from utils import notify_user, cancel_order, save_feedback_to_json, notify_admins, get_new_orders_list, save_order_to_json, get_order_status, load_orders, save_orders, update_order_status, is_valid_request_id, update_request, get_order_data_by_id
+from keyboards import remove_admin_keyboard, start_button_keyboard, main_menu_keyboard, edit_request_keyboard, services_keyboard, services_keyboard_1, admin_panel_keyboard
+from utils import split_message, load_prices, format_prices, escape_md, process_pdf, convert_pdf_to_images, notify_user, cancel_order, save_feedback_to_json, notify_admins, get_new_orders_list, save_order_to_json, get_order_status, load_orders, save_orders, update_order_status, is_valid_request_id, update_request, get_order_data_by_id
 from validators import sanitize_input, is_valid_phone_number, is_valid_address
 
 # Загрузка переменных окружения
@@ -56,6 +56,7 @@ logging.basicConfig(
 class OrderForm(StatesGroup):
     full_name = State()
     address = State()
+    service = State()
     phone_number = State()
     reason = State()
     status = State()
@@ -94,12 +95,12 @@ router.message.middleware(LoggingMiddleware())
 async def start_command(message: Message):
     if message.from_user.id in ADMIN_IDS:
         await message.answer(
-            "Добро пожаловать, администратор! Нажмите кнопку ниже, чтобы начать.",
+            "👋 Добро пожаловать, администратор! Нажмите кнопку ниже, чтобы начать.",
             reply_markup=start_button_keyboard(admin=True),
         )
     else:
         await message.answer(
-            "Добро пожаловать! Нажмите кнопку ниже, чтобы начать.",
+            "👋 Добро пожаловать! Нажмите кнопку ниже, чтобы начать.",
             reply_markup=start_button_keyboard(admin=False),
         )
 
@@ -107,9 +108,9 @@ async def start_command(message: Message):
 @router.callback_query(lambda c: c.data == "start_work")
 async def start_work(callback_query: CallbackQuery):
     if callback_query.from_user.id in admin_ids:
-        await callback_query.message.edit_text("Выберите действие из меню:", reply_markup=main_menu_keyboard(admin=True))
+        await callback_query.message.edit_text("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard(admin=True))
     else:
-        await callback_query.message.edit_text("Выберите действие из меню:", reply_markup=main_menu_keyboard(admin=False))
+        await callback_query.message.edit_text("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard(admin=False))
 
 # Обработка команды /2fa для администраторов
 @router.message(Command("2fa"))
@@ -117,47 +118,51 @@ async def enable_2fa(message: Message):
     if message.from_user.id in ADMIN_IDS:
         totp = pyotp.TOTP(secret)
         uri = totp.provisioning_uri(name=message.from_user.username, issuer_name="OutsourcingBot")
-        await message.answer(f"Ваш секретный ключ для 2FA: {secret}\nСохраните его в надежном месте.\nQR-код для настройки: {uri}")
+        await message.answer(
+            f"🔑 Ваш секретный ключ для 2FA: `{secret}`\n"
+            "💾 Сохраните его в надежном месте.\n"
+            f"📷 QR-код для настройки: [нажмите здесь]({uri})",
+            parse_mode="MarkdownV2"
+        )
     else:
-        await message.answer("У вас нет прав для выполнения этого действия.")
+        await message.answer("🚫 У вас нет прав для выполнения этого действия.")
 
 # Обработка команды /verify для проверки 2FA
 @router.message(Command("verify"))
 async def verify_2fa(message: Message):
     if message.from_user.id in ADMIN_IDS:
-        totp = pyotp.TOTP(secret)
-        code = message.get_args()
-        if totp.verify(code):
-            await message.answer("2FA успешно пройдена.")
-        else:
-            await message.answer("Неверный код 2FA.")
+        await message.answer("🔍 Пожалуйста, введите ваш код 2FA:")
     else:
-        await message.answer("У вас нет прав для выполнения этого действия.")
+        await message.answer("🚫 У вас нет прав для выполнения этого действия.")
 
-# Обработка нажатия на кнопку "Список новых заявок"
-@router.callback_query(F.data == "list_new_orders")
-async def handle_list_new_orders(callback_query: CallbackQuery):
+# Обработка нажатия на кнопку "Общий список заявок"
+@router.callback_query(F.data == 'show_all_orders')
+async def show_all_orders(callback_query: CallbackQuery):
     orders = load_orders()
-    response_text = "Список новых заявок:\n\n"
+    if not orders:
+        await bot.send_message(callback_query.from_user.id, "📭 Список заявок пуст.")
+        return
+
+    orders_text = "📋 Общий список заявок:\n\n"
     for order in orders:
-        if order['status'] in ["Ожидает обработки", "В работе"]:
-            response_text += (
-                f"ID заявки: {order['id']}\n"
-                f"ФИО: {order['full_name']}\n"
-                f"Адрес: {order['address']}\n"
-                f"Телефон: {order['phone_number']}\n"
-                f"Причина: {order['reason']}\n"
-                f"Статус: {order['status']}\n\n"
-            )
-    if response_text == "Список новых заявок:\n\n":
-        response_text = "Нет новых заявок."
-    await callback_query.message.answer(response_text)
-    await callback_query.answer()
+        orders_text += (
+            f"🆔 ID: {escape_md(str(order.get('id', 'N/A')))}\n"
+            f"👤 Имя: {escape_md(order.get('full_name', 'N/A'))}\n"
+            f"📞 Телефон: {escape_md(order.get('phone_number', 'N/A'))}\n"
+            f"🏠 Адрес: {escape_md(order.get('address', 'N/A'))}\n"
+            f"💼 Услуга: {escape_md(order.get('service', 'N/A'))}\n"
+            f"📋 Статус: {escape_md(order.get('status', 'N/A'))}\n"
+            f"❓ Причина обращения: {escape_md(order.get('reason', 'N/A'))}\n"
+            f"📅 Дата создания: {escape_md(order.get('created_at', 'N/A'))}\n"
+            f"{escape_md('-' * 20)}\n"
+        )
+
+    await bot.send_message(callback_query.from_user.id, orders_text, parse_mode="MarkdownV2")
 
 # Обработка кнопки "Услуги"
 @router.callback_query(F.data == "services")
 async def show_services(callback_query: CallbackQuery):
-    await callback_query.message.edit_text("Выберите услугу:", reply_markup=services_keyboard())
+    await callback_query.message.edit_text("🔧 Выберите услугу:", reply_markup=services_keyboard())
 
 # Обработка кнопки "Компьютерная помощь"
 @router.callback_query(F.data == "service_1")
@@ -203,7 +208,7 @@ async def order_visit(callback_query: CallbackQuery, state: FSMContext):
 # Обработка кнопки "Редактировать заявку"
 @router.callback_query(F.data == "edit_request")
 async def edit_request(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите номер Вашей ID Заявки:")
+    await callback_query.message.edit_text("🆔 Введите номер Вашей ID Заявки:")
     await state.set_state(OrderForm.request_id)
 
 # Обработка ввода ID заявки для редактирования
@@ -211,12 +216,12 @@ async def edit_request(callback_query: CallbackQuery, state: FSMContext):
 async def process_request_id(message: Message, state: FSMContext):
     request_id = int(message.text.strip())
     if not is_valid_request_id(request_id):
-        await message.answer("Неверный ID заявки. Пожалуйста, введите корректный номер ID.")
+        await message.answer("🚫 Неверный ID заявки. Пожалуйста, введите корректный номер ID.")
         return
     
     order_data = get_order_data_by_id(request_id)
     if not order_data:
-        await message.answer("Заявка с таким ID не найдена. Пожалуйста, введите корректный номер ID.")
+        await message.answer("🚫 Заявка с таким ID не найдена. Пожалуйста, введите корректный номер ID.")
         return
     
     await state.update_data(request_id=request_id, order_data=order_data)
@@ -226,28 +231,28 @@ async def process_request_id(message: Message, state: FSMContext):
 # Обработка кнопки "Редактировать имя"
 @router.callback_query(F.data == "edit_full_name")
 async def edit_name(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите новое имя:")
+    await callback_query.message.edit_text("👤 Введите новое имя:")
     await state.set_state(OrderForm.edit_value)
     await state.update_data(edit_field="full_name")
 
 # Обработка кнопки "Редактировать адрес"
 @router.callback_query(F.data == "edit_address")
 async def edit_address(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите новый адрес:")
+    await callback_query.message.edit_text("🏠 Введите новый адрес:")
     await state.set_state(OrderForm.edit_value)
     await state.update_data(edit_field="address")
 
 # Обработка кнопки "Редактировать телефон"
 @router.callback_query(F.data == "edit_phone_number")
 async def edit_phone(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите новый номер телефона:")
+    await callback_query.message.edit_text("📞 Введите новый номер телефона:")
     await state.set_state(OrderForm.edit_value)
     await state.update_data(edit_field="phone_number")
 
 # Обработка кнопки "Редактировать причину"
 @router.callback_query(F.data == "edit_reason")
 async def edit_reason(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите новую причину обращения:")
+    await callback_query.message.edit_text("❓ Введите новую причину обращения:")
     await state.set_state(OrderForm.edit_value)
     await state.update_data(edit_field="reason")
 
@@ -261,21 +266,21 @@ async def process_edit_value(message: Message, state: FSMContext):
     orders = load_orders()
     order_data = next((order for order in orders if order['id'] == request_id), None)
     if order_data is None:
-        await message.answer("Заявка с указанным ID не найдена.")
+        await message.answer("🚫 Заявка с указанным ID не найдена.")
         return
     if field in ["full_name", "address", "phone_number", "reason"]:
         order_data[field] = value
         save_orders(orders)
-        await message.answer(f"Поле {field} успешно обновлено.")
+        await message.answer(f"💾 Поле {field} успешно обновлено.")
     else:
-        await message.answer("Неверное поле для редактирования.")
-    await message.answer("Выберите поле для редактирования или вернитесь в меню:", reply_markup=edit_request_keyboard())
+        await message.answer("🚫 Неверное поле для редактирования.")
+    await message.answer("💬 Выберите поле для редактирования или вернитесь в меню:", reply_markup=edit_request_keyboard())
     await state.set_state(OrderForm.edit_field)
 
 # Обработка кнопки "Оформить заявку"
 @router.callback_query(F.data == "apply_request")
 async def create_request(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Пожалуйста, введите ваше полное имя:")
+    await callback_query.message.edit_text("👤 Пожалуйста, введите ваше полное имя:")
     await state.set_state(OrderForm.full_name)
 
 # Обработка ввода полного имени
@@ -283,8 +288,44 @@ async def create_request(callback_query: CallbackQuery, state: FSMContext):
 async def process_full_name(message: Message, state: FSMContext):
     full_name = sanitize_input(message.text.strip())
     await state.update_data(full_name=full_name)
-    await message.answer("Введите Ваш адрес:")
+    await message.answer("🏠 Введите Ваш адрес:")
     await state.set_state(OrderForm.address)
+
+# Обработка ввода адреса
+@router.message(StateFilter(OrderForm.address))
+async def process_address(message: Message, state: FSMContext):
+    address = sanitize_input(message.text.strip())
+    if not is_valid_address(address):
+        await message.answer("🚫 Неверный адрес. Пожалуйста, введите корректный адрес.")
+        return
+    await state.update_data(address=address)
+    await message.answer("📋 Выберите услугу:", reply_markup=services_keyboard_1())
+    await state.set_state(OrderForm.service)
+
+# Обработка нажатия на кнопку "Компьютерная помощь"
+@router.callback_query(F.data == 'computer_help')
+async def computer_help(callback_query: CallbackQuery, state: FSMContext):
+    await state.update_data(service="🔧 Компьютерная помощь")
+    await callback_query.message.answer("📞 Введите номер телефона:")
+    await state.set_state(OrderForm.phone_number)
+
+# Обработка нажатия на кнопку "Монтажные работы"
+@router.callback_query(F.data == 'installation_work')
+async def installation_work(callback_query: CallbackQuery, state: FSMContext):
+    await state.update_data(service="🔧 Монтажные работы")
+    await callback_query.message.answer("📞 Введите номер телефона:")
+    await state.set_state(OrderForm.phone_number)
+
+# Обработка ввода номера телефона
+@router.message(StateFilter(OrderForm.phone_number))
+async def process_phone_number(message: Message, state: FSMContext):
+    phone_number = sanitize_input(message.text.strip())
+    if not is_valid_phone_number(phone_number):
+        await message.answer("🚫 Неверный формат номера телефона. Пожалуйста, введите корректный номер.")
+        return
+    await state.update_data(phone_number=phone_number)
+    await message.answer("❓ Введите причину обращения:")
+    await state.set_state(OrderForm.reason)
 
 # Обработка ввода причины обращения
 @router.message(StateFilter(OrderForm.reason))
@@ -296,44 +337,45 @@ async def process_reason(message: Message, state: FSMContext):
     order_id = await save_order_to_json(bot, order_data)
     order_data['id'] = order_id
     await message.answer(
-        f"Заявка #{order_id} успешно оформлена!\n"
-        f"Имя: {order_data['full_name']}\n"
-        f"Адрес: {order_data['address']}\n"
-        f"Телефон: {order_data['phone_number']}\n"
-        f"Причина обращения: {order_data['reason']}\n"
-        f"Статус: {order_data['status']}\n"
-        "Вашей заявкой в данный момент занимаются, ожидайте звонка."
+        f"📋 Заявка #{order_id} успешно оформлена!\n"
+        f"👤 Имя: {order_data['full_name']}\n"
+        f"🏠 Адрес: {order_data['address']}\n"
+        f"💼 Услуга: {order_data['service']}\n"
+        f"📞 Телефон: {order_data['phone_number']}\n"
+        f"❓ Причина обращения: {order_data['reason']}\n"
+        f"📋 Статус: {order_data['status']}\n"
+        f"📅 Дата создания: {order_data['created_at']}\n",
+        reply_markup=main_menu_keyboard()
     )
-    await message.answer("Выберите действие из меню:", reply_markup=main_menu_keyboard())
     await state.clear()
 
 # Обработка кнопки "Назад" в меню услуг
 @router.callback_query(F.data == "back_to_main")
 async def back_to_main(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Выберите действие из меню:", reply_markup=main_menu_keyboard())
+    await callback_query.message.edit_text("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard())
     await state.clear()
 
 # Обработка кнопки "Панель администратора"
 @router.callback_query(F.data == "admin_panel")
 async def admin_panel(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите номер Вашей ID Заявки для изменения статуса:")
+    await callback_query.message.edit_text("🆔 Введите номер Вашей ID Заявки для изменения статуса:")
     await state.set_state(AdminState.request_id)
 
 # Обработка кнопки "Назад" в панели администратора
 @router.callback_query(F.data == "back_to_start")
 async def back_to_start(callback_query: CallbackQuery):
     is_admin = callback_query.from_user.id in ADMIN_IDS
-    await callback_query.message.edit_text("Выберите действие из меню:", reply_markup=start_button_keyboard(admin=is_admin))
+    await callback_query.message.edit_text("📋 Выберите действие из меню:", reply_markup=start_button_keyboard(admin=is_admin))
 
 # Обработка ввода ID заявки для изменения статуса
 @router.message(StateFilter(AdminState.request_id))
 async def process_admin_request_id(message: Message, state: FSMContext):
     request_id = int(message.text.strip())
     if not is_valid_request_id(request_id):
-        await message.answer("Неверный ID заявки. Пожалуйста, введите корректный номер ID.")
+        await message.answer("🚫 Неверный ID заявки. Пожалуйста, введите корректный номер ID.")
         return
     await state.update_data(request_id=request_id)
-    await message.answer("Выберите новый статус заявки:", reply_markup=admin_panel_keyboard())
+    await message.answer("📋 Выберите новый статус заявки:", reply_markup=admin_panel_keyboard())
     await state.set_state(AdminState.status)
 
 # Обработка кнопки "Обработано"
@@ -346,24 +388,33 @@ async def status_processed(callback_query: CallbackQuery, state: FSMContext):
         if order['id'] == request_id:
             order['status'] = "Обработано"
             save_orders(orders)
+            if 'history' not in order:
+                order['history'] = []
+            order['history'].append({
+                'timestamp': datetime.now().isoformat(),
+                'status': "✅ Обработано",
+                'admin_id': callback_query.from_user.id
+            })
+            save_orders(orders)      
             await callback_query.message.edit_text(
-                f"Статус заявки #{request_id} изменен на 'Обработано'.\n"
-                f"Имя: {order['full_name']}\n"
-                f"Адрес: {order['address']}\n"
-                f"Телефон: {order['phone_number']}\n"
-                f"Причина обращения: {order['reason']}\n"
-                f"Статус: {order['status']}"
+                f"🆔 Статус заявки #{request_id} изменен на '✅ Обработано'.\n"
+                f"👤 Имя: {order['full_name']}\n"
+                f"🏠 Адрес: {order['address']}\n"
+                f"📞 Телефон: {order['phone_number']}\n"
+                f"❓ Причина обращения: {order['reason']}\n"
+                f"📋 Статус: {order['status']}\n"
+                f"👤 Обработал администратор: {callback_query.from_user.first_name} {callback_query.from_user.last_name}"
             )
-            await callback_query.message.answer("Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
+            await callback_query.message.answer("📋 Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
             
             # Уведомление пользователя и предложение оставить отзыв
             feedback_button = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Оставить отзыв", callback_data=f"leave_feedback:{request_id}")]
+                [InlineKeyboardButton(text="🗂️ Оставить отзыв", callback_data=f"leave_feedback:{request_id}")]
             ])
-            await bot.send_message(order["user_id"], "Ваша заявка завершена. Пожалуйста, оставьте отзыв.", reply_markup=feedback_button)
+            await bot.send_message(order["user_id"], "✅ Ваша заявка завершена. Пожалуйста, оставьте отзыв.", reply_markup=feedback_button)
             break
     else:
-        await callback_query.message.edit_text(f"Не удалось изменить статус заявки #{request_id}.")
+        await callback_query.message.edit_text(f"🚫 Не удалось изменить статус заявки #{request_id}.")
     await state.clear()
 
 # Обработка кнопки "В работе"
@@ -374,20 +425,28 @@ async def status_in_progress(callback_query: CallbackQuery, state: FSMContext):
     orders = load_orders()
     for order in orders:
         if order['id'] == request_id:
-            order['status'] = "В работе"
+            order['status'] = "🔧 В работе"
+            if 'history' not in order:
+                order['history'] = []
+                order['history'].append({
+                    'timestamp': datetime.now().isoformat(),
+                   'status': "🔧 В работе",
+                    'admin_id': callback_query.from_user.id
+                })
             save_orders(orders)
             await callback_query.message.edit_text(
-                f"Статус заявки #{request_id} изменен на 'В работе'.\n"
-                f"Имя: {order['full_name']}\n"
-                f"Адрес: {order['address']}\n"
-                f"Телефон: {order['phone_number']}\n"
-                f"Причина обращения: {order['reason']}\n"
-                f"Статус: {order['status']}"
+                f"🆔 Статус заявки #{request_id} изменен на '🔧 В работе'.\n"
+                f"👤 Имя: {order['full_name']}\n"
+                f"🏠 Адрес: {order['address']}\n"
+                f"📞 Телефон: {order['phone_number']}\n"
+                f"❓ Причина обращения: {order['reason']}\n"
+                f"📋 Статус: {order['status']}\n"
+                f"👤 Обработал администратор: {callback_query.from_user.first_name} {callback_query.from_user.last_name}"
             )
-            await callback_query.message.answer("Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
+            await callback_query.message.answer("📋 Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
             break
     else:
-        await callback_query.message.edit_text(f"Не удалось изменить статус заявки #{request_id}.")
+        await callback_query.message.edit_text(f"🚫 Не удалось изменить статус заявки #{request_id}.")
     await state.clear()
 
 # Обработка нажатия на кнопку "Список новых заявок"
@@ -400,17 +459,17 @@ async def list_new_orders(callback_query: CallbackQuery):
         orders = []
 
     if not orders:
-        await callback_query.message.answer("Нет новых заявок.")
+        await callback_query.message.answer("📭 Нет новых заявок.")
         return
 
-    response_text = "Список новых заявок:\n\n"
+    response_text = "📋 Список новых заявок:\n\n"
     for order in orders:
         response_text += (
-            f"ID заявки: {order['id']}\n"
-            f"ФИО: {order['full_name']}\n"
-            f"Адрес: {order['address']}\n"
-            f"Телефон: {order['phone_number']}\n"
-            f"Причина: {order['reason']}\n\n"
+            f"🆔 ID заявки: {order['id']}\n"
+            f"👤 ФИО: {order['full_name']}\n"
+            f"🏠 Адрес: {order['address']}\n"
+            f"📞 Телефон: {order['phone_number']}\n"
+            f"❓ Причина: {order['reason']}\n\n"
         )
 
     await callback_query.message.answer(response_text)
@@ -419,7 +478,7 @@ async def list_new_orders(callback_query: CallbackQuery):
 # Обработка кнопки "Статус заявки"
 @router.callback_query(F.data == "status_request")
 async def status_request(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите номер Вашей ID Заявки для просмотра статуса:")
+    await callback_query.message.edit_text("🔍 Введите номер Вашей ID Заявки для просмотра статуса:")
     await state.set_state(StatusRequestForm.request_id)
 
 # Обработка ввода ID заявки для просмотра статуса
@@ -441,19 +500,19 @@ async def process_status_request_id(message: Message, state: FSMContext):
                     f"Статус: {order['status']}"
                 )
             else:
-                await message.answer("Отказано в доступе к этой заявке.")
+                await message.answer("🚫 Отказано в доступе к этой заявке.")
             break
     else:
-        await message.answer(f"Заявка с ID #{request_id} не найдена.")
+        await message.answer(f"🆔 Заявка с ID #{request_id} не найдена.")
     
     # Возврат в главное меню после показа статуса заявки
-    await message.answer("Выберите действие из меню:", reply_markup=main_menu_keyboard())
+    await message.answer("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard())
     await state.clear()
 
 # Обработка кнопки "Добавить администратора"
 @router.callback_query(F.data == "add_admin")
 async def add_admin(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите ID нового администратора:")
+    await callback_query.message.edit_text("🆔 Введите ID нового администратора:")
     await state.set_state(AdminState.new_admin_id)
 
 # Обработка ввода ID нового администратора
@@ -463,27 +522,27 @@ async def process_new_admin_id(message: Message, state: FSMContext):
     try:
         new_admin_id = int(new_admin_id)
     except ValueError:
-        await message.answer("Неверный ID. Пожалуйста, введите корректный номер ID.")
+        await message.answer("🚫 Неверный ID. Пожалуйста, введите корректный номер ID.")
         return
 
     if new_admin_id in ADMIN_IDS: # type: ignore
-        await message.answer("Этот ID уже является администратором.")
+        await message.answer("✅ Этот ID уже является администратором.")
         return
 
     ADMIN_IDS.append(new_admin_id) # type: ignore
     new_admin_ids_str = ','.join(map(str, ADMIN_IDS)) # type: ignore
     set_key('.env', 'ADMIN_ID', new_admin_ids_str)
 
-    await message.answer(f"Администратор с ID {new_admin_id} успешно добавлен.")
+    await message.answer(f"✅ Администратор с ID {new_admin_id} успешно добавлен.")
     
     # Возврат в панель администратора после добавления администратора
-    await message.answer("Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
+    await message.answer("📋 Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
     await state.clear()
 
 # Обработка кнопки "Удалить администратора"
 @router.callback_query(F.data == "remove_admin")
 async def remove_admin(callback_query: CallbackQuery):
-    await callback_query.message.edit_text("Выберите администратора для удаления:", reply_markup=remove_admin_keyboard(ADMIN_IDS))
+    await callback_query.message.edit_text("💬 Выберите администратора для удаления:", reply_markup=remove_admin_keyboard(ADMIN_IDS))
 
 # Обработка подтверждения удаления администратора
 @router.callback_query(F.data.startswith("confirm_remove_admin_"))
@@ -493,76 +552,83 @@ async def confirm_remove_admin(callback_query: CallbackQuery):
         ADMIN_IDS.remove(admin_id) # type: ignore
         new_admin_ids_str = ','.join(map(str, ADMIN_IDS)) # type: ignore
         set_key('.env', 'ADMIN_ID', new_admin_ids_str)
-        await callback_query.message.edit_text(f"Администратор с ID {admin_id} успешно удален.")
+        await callback_query.message.edit_text(f"✅ Администратор с ID {admin_id} успешно удален.")
     else:
-        await callback_query.message.edit_text(f"Администратор с ID {admin_id} не найден.")
+        await callback_query.message.edit_text(f"🚫 Администратор с ID {admin_id} не найден.")
     
     # Возврат в панель администратора после удаления администратора
-    await callback_query.message.answer("Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
+    await callback_query.message.answer("📋 Выберите действие из меню:", reply_markup=start_button_keyboard(admin=True))
 
 # Аналитика заявок (только для администраторов)
 @router.callback_query(lambda c: c.data == "show_stats")
 async def show_stats(callback_query: CallbackQuery):
     if callback_query.from_user.id not in admin_ids:
-        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        await callback_query.answer("🚫 У вас нет прав для выполнения этого действия.", show_alert=True)
         return
 
     orders = load_orders()
     total_orders = len(orders)
-    processed_orders = len([order for order in orders if order['status'] == "Обработано"])
-    in_progress_orders = len([order for order in orders if order['status'] == "В работе"])
-    pending_orders = len([order for order in orders if order['status'] == "Ожидает обработки"])
+    processed_orders = len([order for order in orders if order['status'] == "✅ Обработано"])
+    in_progress_orders = len([order for order in orders if order['status'] == "🔧 В работе"])
+    pending_orders = len([order for order in orders if order['status'] == "🔄 Ожидает обработки"])
     
     avg_processing_time = sum(
         [
             (datetime.fromisoformat(order['history'][-1]['timestamp']) - datetime.fromisoformat(order['history'][0]['timestamp'])).total_seconds()
             for order in orders
-            if order['status'] == "Обработано" and 'history' in order and len(order['history']) > 1
+            if order['status'] == "✅ Обработано" and 'history' in order and len(order['history']) > 1
         ]
     ) / processed_orders if processed_orders > 0 else 0
     
     stats_text = f"Всего заявок: {total_orders}\n"
-    stats_text += f"Обработано: {processed_orders}\n"
-    stats_text += f"В работе: {in_progress_orders}\n"
-    stats_text += f"Ожидает обработки: {pending_orders}\n"
-    stats_text += f"Среднее время обработки: {avg_processing_time / 60:.2f} минут\n"
+    stats_text += f"✅ Обработано: {processed_orders}\n"
+    stats_text += f"🔧 В работе: {in_progress_orders}\n"
+    stats_text += f"🔄 Ожидает обработки: {pending_orders}\n"
+    stats_text += f"📈 Среднее время обработки: {avg_processing_time / 60:.2f} минут\n"
     
     await callback_query.message.answer(stats_text)
 
 # Обработка кнопки "FAQ"
 @router.callback_query(F.data == "show_faq")
 async def show_faq(callback_query: CallbackQuery):
-    faq_text = "Часто задаваемые вопросы:\n\n"
-    faq_text += "1. Как оформить заявку?\n"
-    faq_text += "Ответ: Нажмите на кнопку 'Оформить заявку' и следуйте инструкциям.\n\n"
-    faq_text += "2. Как узнать статус заявки?\n"
-    faq_text += "Ответ: Нажмите на кнопку 'Статус заявки' и введите номер Вашей заявки.\n\n"
-    faq_text += "3. Как связаться с техподдержкой?\n"
-    faq_text += "Ответ: Напишите нам на почту: alex05524@gmail.com или WhatsApp: +7(707)317-28-55.\n\n"
+    faq_text = "❓ Часто задаваемые вопросы:\n\n"
+    faq_text += "1. 📜 Как оформить заявку?\n"
+    faq_text += "📝 Ответ: Нажмите на кнопку 'Оформить заявку' и следуйте инструкциям.\n\n"
+    faq_text += "2. 📋 Как узнать статус заявки?\n"
+    faq_text += "📝 Ответ: Нажмите на кнопку 'Статус заявки' и введите номер Вашей заявки.\n\n"
+    faq_text += "3. 🛠️ Как связаться с техподдержкой?\n"
+    faq_text += "📝 Ответ: Напишите нам на почту: alex05524@gmail.com или WhatsApp: +7(707)317-28-55.\n\n"
+    faq_text += "📝 *Ответ:* Нажмите на кнопку '💲 Стоимость услуг' для получения информации о ценах.\n\n"
+    faq_text += "5. 🚫 *Как отменить заявку?*\n"
+    faq_text += "📝 *Ответ:* Нажмите на кнопку '🚫 Отменить заявку' и следуйте инструкциям.\n\n"
+    faq_text += "6. 🌟 *Как оставить отзыв?*\n"
+    faq_text += "📝 *Ответ:* Нажмите на кнопку '📝 Оставить отзыв' после завершения заявки.\n\n"
+    faq_text += "7. 🔧 *Какие услуги вы предоставляете?*\n"
+    faq_text += "📝 *Ответ:* Нажмите на кнопку '📋 Услуги' для просмотра списка доступных услуг.\n\n"    
     await callback_query.message.edit_text(faq_text)
     # Переход в главное меню после отображения FAQ
-    await callback_query.message.answer("Выберите действие из меню:", reply_markup=main_menu_keyboard())
+    await callback_query.message.answer("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard())
 
 # Обработка кнопки "Отменить заявку"
 @router.callback_query(F.data == "cancel_request")
 async def cancel_request(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("Введите номер Вашей ID Заявки для отмены:")
+    await callback_query.message.edit_text("🆔 Введите номер Вашей ID Заявки для отмены:")
     await state.set_state(CancelOrderForm.request_id)
 
 @router.message(StateFilter(CancelOrderForm.request_id))
 async def process_cancel_request_id(message: Message, state: FSMContext):
     request_id = int(message.text.strip())
     if not get_order_data_by_id(request_id):
-        await message.answer("Неверный ID заявки. Пожалуйста, введите корректный номер ID.")
+        await message.answer("🚫 Неверный ID заявки. Пожалуйста, введите корректный номер ID.")
         await state.clear()
         return
     
     cancel_order(request_id)
-    await message.answer("Ваша заявка успешно отменена.")
-    await notify_admins(bot, f"Заявка с ID {request_id} была отменена пользователем.")
+    await message.answer("✅ Ваша заявка успешно отменена.")
+    await notify_admins(bot, f"👤 Заявка с ID {request_id} была отменена пользователем.")
     
     # Возврат в главное меню после отмены заявки
-    await message.answer("Выберите действие из меню:", reply_markup=main_menu_keyboard())
+    await message.answer("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard())
     await state.clear()
 
 # Обработка кнопки "Оставить отзыв"
@@ -570,7 +636,7 @@ async def process_cancel_request_id(message: Message, state: FSMContext):
 async def leave_feedback(callback_query: CallbackQuery, state: FSMContext):
     request_id = int(callback_query.data.split(":")[1])
     await state.update_data(request_id=request_id)
-    await callback_query.message.edit_text("Введите ваш отзыв:")
+    await callback_query.message.edit_text("📝 Введите ваш отзыв:")
     await state.set_state(FeedbackForm.feedback)
 
 @router.message(StateFilter(FeedbackForm.feedback))
@@ -581,11 +647,11 @@ async def process_feedback(message: Message, state: FSMContext):
 
     # Сохранение отзыва в JSON-файл
     save_feedback_to_json(request_id, feedback)
-    await message.answer("Спасибо за Ваш отзыв!")
-    await notify_admins(bot, f"Пользователь оставил отзыв на заявку с ID {request_id}: {feedback}")
+    await message.answer("📎 Спасибо за Ваш отзыв!")
+    await notify_admins(bot, f"👤 Пользователь оставил отзыв на заявку с ID {request_id}: {feedback}")
     
     # Возврат в главное меню после оставления отзыва
-    await message.answer("Выберите действие из меню:", reply_markup=main_menu_keyboard())
+    await message.answer("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard())
     await state.clear()
 
 # Обработка ввода номера телефона
@@ -593,46 +659,44 @@ async def process_feedback(message: Message, state: FSMContext):
 async def process_phone_number(message: Message, state: FSMContext):
     phone_number = sanitize_input(message.text.strip())
     if not is_valid_phone_number(phone_number):
-        await message.answer("Неверный формат номера телефона. Пожалуйста, введите корректный номер.")
+        await message.answer("🚫 Неверный формат номера телефона. Пожалуйста, введите корректный номер.")
         return
     await state.update_data(phone_number=phone_number)
-    await message.answer("Введите причину обращения:")
+    await message.answer("❓ Введите причину обращения:")
     await state.set_state(OrderForm.reason)
 
-# Обработка ввода адреса
-@router.message(StateFilter(OrderForm.address))
-async def process_address(message: Message, state: FSMContext):
-    address = sanitize_input(message.text.strip())
-    if not is_valid_address(address):
-        await message.answer("Неверный адрес. Пожалуйста, введите корректный адрес.")
-        return
-    await state.update_data(address=address)
-    await message.answer("Введите номер телефона:")
-    await state.set_state(OrderForm.phone_number)
+# Обработка нажатия на кнопку "Стоимость услуг"
+# @router.callback_query(F.data == 'show_price')
+# async def show_price(callback_query: CallbackQuery):
+#     # Конвертация готового PDF в изображение
+#     pdf_path = "price_table.pdf"  # Путь к готовому PDF-файлу
+#     image_paths = convert_pdf_to_images(pdf_path, "price_table_image")
+    
+#     # Отправка изображения
+#     for image_path in image_paths:
+#         photo = FSInputFile(image_path)
+#         await bot.send_photo(callback_query.from_user.id, photo)
 
-# Обновление статуса заявки и уведомление пользователя
-@router.callback_query(F.data.startswith("update_status:"))
-async def update_status(callback_query: CallbackQuery, state: FSMContext):
-    data = callback_query.data.split(":")
-    request_id = int(data[1])
-    new_status = data[2]
-    order = update_order_status(request_id, new_status)
-    if order:
-        await notify_user(bot, order["id"], f"Статус вашей заявки #{request_id} обновлен на '{new_status}'.")
-        await callback_query.message.answer(f"Статус заявки #{request_id} успешно обновлен на '{new_status}'.")
-        
-        if new_status == "Обработано":
-            feedback_button = InlineKeyboardMarkup().add(InlineKeyboardButton("Оставить отзыв", callback_data="leave_feedback"))
-            await bot.send_message(order["id"], "Ваша заявка завершена. Пожалуйста, оставьте отзыв.", reply_markup=feedback_button)
-    else:
-        await callback_query.message.answer("Заявка с таким ID не найдена.")
+# Обработка загрузки PDF-документа
+# @router.message(F.document & (F.document.mime_type == "application/pdf"))
+# async def handle_pdf(message: types.Message):
+#     await process_pdf(message)
+
+# Обработка кнопки "Стоимость услуг"
+@router.callback_query(F.data == "show_price")
+async def show_price(callback_query: CallbackQuery):
+    prices = load_prices()
+    formatted_prices = format_prices(prices)
+    messages = split_message(formatted_prices)
+    for msg in messages:
+        await callback_query.message.answer(msg, parse_mode="MarkdownV2")
 
 async def main():
     dp.include_router(router)
     try:
         await dp.start_polling(bot)
     except asyncio.CancelledError:
-        logging.info("Бот остановлен!")
+        logging.info("✅ Бот остановлен!")
     finally:
         await shutdown(dp)
 
@@ -645,4 +709,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.info("Бот остановлен!")
+        logging.info("✅ Бот остановлен!")

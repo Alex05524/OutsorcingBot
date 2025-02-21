@@ -3,7 +3,11 @@ import os
 import logging
 from datetime import datetime
 from aiogram import Bot
+from aiogram.types import FSInputFile, Message
 from dotenv import load_dotenv
+from pdf2image import convert_from_path
+import fitz
+from tabulate import tabulate
 
 # Указываем абсолютный путь к файлу orders.json
 ORDERS_FILE_PATH = os.path.join(os.path.dirname(__file__), 'orders.json')
@@ -92,6 +96,9 @@ async def save_order_to_json(bot: Bot, order_data: dict) -> int:
         order_data["id"] = last_order_id + 1
     else:
         order_data["id"] = 1
+
+    # Добавление даты создания заявки
+    order_data["created_at"] = datetime.now().isoformat()
 
     # Инициализация истории, если отсутствует
     if "history" not in order_data:
@@ -227,3 +234,71 @@ def save_feedback_to_json(request_id: int, feedback: str):
 async def notify_user(bot: Bot, user_id: int, message: str):
     """Отправляет уведомление пользователю."""
     await bot.send_message(user_id, message)
+
+async def process_pdf(message: Message):
+    """Обрабатывает загруженный PDF-документ, конвертирует в изображения и отправляет в Telegram."""
+    file_path = await message.document.download()
+    images = convert_from_path(file_path.name)
+
+    try:
+        for i, image in enumerate(images):
+            image_path = f"page_{i+1}.jpg"
+            image.save(image_path, "JPEG")
+            await message.answer_photo(FSInputFile(image_path))
+            os.remove(image_path)
+    finally:
+        os.remove(file_path.name)
+
+def convert_pdf_to_images(pdf_path, output_folder="images"):
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    pdf_document = fitz.open(pdf_path)
+    image_paths = []
+
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        pix = page.get_pixmap()
+        image_path = f"{output_folder}/page_{page_num + 1}.png"
+        pix.save(image_path)
+        image_paths.append(image_path)
+
+    return image_paths
+
+def escape_md(text: str) -> str:
+    """Экранирует специальные символы MarkdownV2"""
+    if not isinstance(text, str):
+        return text
+    special_chars = r"_*[]()~`>#+-=|{}.!"
+    return ''.join(f'\\{char}' if char in special_chars else char for char in text)
+
+def load_prices():
+    with open('prices.json', 'r', encoding='utf-8') as file:
+        return json.load(file)
+
+def format_prices(prices):
+    table_data = []
+    for service in prices['services']:
+        name = escape_md(service['name'])
+        price = escape_md(service['price'])
+        note = escape_md(service['note'])
+        table_data.append([name, price, note])
+    
+    headers = ["Услуга", "Цена (KZT)", "Примечание"]
+    formatted_prices = "💲 *Стоимость услуг:*\n\n"
+    formatted_prices += "```\n"
+    formatted_prices += tabulate(table_data, headers, tablefmt="grid")
+    formatted_prices += "\n```"
+    return formatted_prices
+
+def split_message(message, max_length=4096):
+    """Разбивает сообщение на части, чтобы избежать ошибки MESSAGE_TOO_LONG"""
+    parts = []
+    while len(message) > max_length:
+        split_index = message.rfind('\n', 0, max_length)
+        if split_index == -1:
+            split_index = max_length
+        parts.append(message[:split_index])
+        message = message[split_index:]
+    parts.append(message)
+    return parts
