@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+import re
 from datetime import datetime
 from aiogram import Bot
 from aiogram.types import FSInputFile, Message
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 from pdf2image import convert_from_path
 import fitz
 from tabulate import tabulate
+from aiogram.utils.formatting import Bold, Text
+from pdf2image import convert_from_path
 
 # Указываем абсолютный путь к файлу orders.json
 ORDERS_FILE_PATH = os.path.join(os.path.dirname(__file__), 'orders.json')
@@ -266,11 +269,13 @@ def convert_pdf_to_images(pdf_path, output_folder="images"):
     return image_paths
 
 def escape_md(text: str) -> str:
-    """Экранирует специальные символы MarkdownV2"""
+    """Экранирует специальные символы для MarkdownV2."""
     if not isinstance(text, str):
         return text
-    special_chars = r"_*[]()~`>#+-=|{}.!"
-    return ''.join(f'\\{char}' if char in special_chars else char for char in text)
+    # Список специальных символов MarkdownV2
+    special_chars = r'\_*[]()~`>#+-=|{}.!'
+    # Экранирование специальных символов
+    return re.sub(r'([%s])' % re.escape(special_chars), r'\\\1', text)
 
 def load_prices():
     with open('prices.json', 'r', encoding='utf-8') as file:
@@ -279,17 +284,19 @@ def load_prices():
 def format_prices(prices):
     table_data = []
     for service in prices['services']:
-        name = escape_md(service['name'])
-        price = escape_md(service['price'])
-        note = escape_md(service['note'])
+        name = service['name']
+        price = service['price']
+        note = service['note']
         table_data.append([name, price, note])
     
     headers = ["Услуга", "Цена (KZT)", "Примечание"]
-    formatted_prices = "💲 *Стоимость услуг:*\n\n"
-    formatted_prices += "```\n"
-    formatted_prices += tabulate(table_data, headers, tablefmt="grid")
-    formatted_prices += "\n```"
-    return formatted_prices
+    formatted_prices = Text(
+        "💲 ", Bold("Стоимость услуг:"), "\n\n",
+        "```\n",
+        tabulate(table_data, headers, tablefmt="grid"),
+        "\n```"
+    )
+    return formatted_prices.as_markdown()
 
 def split_message(message, max_length=4096):
     """Разбивает сообщение на части, чтобы избежать ошибки MESSAGE_TOO_LONG"""
@@ -302,3 +309,21 @@ def split_message(message, max_length=4096):
         message = message[split_index:]
     parts.append(message)
     return parts
+
+def pdf_to_image(pdf_path, output_folder, poppler_path):
+    # Проверяем, существует ли выходная директория; если нет, создаём её
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Конвертируем PDF в изображения
+    images = convert_from_path(pdf_path, poppler_path=poppler_path)
+
+    image_paths = pdf_to_image(pdf_path, output_folder, poppler_path)
+    for i, image in enumerate(images):
+        # Формируем путь для сохранения каждого изображения
+        image_path = os.path.join(output_folder, f'page_{i + 1}.png')
+        # Сохраняем изображение
+        image.save(image_path, 'PNG')
+        image_paths.append(image_path)
+
+    return image_paths

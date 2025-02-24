@@ -9,13 +9,15 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, TelegramObject, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
+from aiogram.exceptions import TelegramBadRequest
 from dotenv import load_dotenv, set_key
 from datetime import datetime
 
 from states import OrderForm, StatusForm
 from keyboards import remove_admin_keyboard, start_button_keyboard, main_menu_keyboard, edit_request_keyboard, services_keyboard, services_keyboard_1, admin_panel_keyboard
-from utils import split_message, load_prices, format_prices, escape_md, process_pdf, convert_pdf_to_images, notify_user, cancel_order, save_feedback_to_json, notify_admins, get_new_orders_list, save_order_to_json, get_order_status, load_orders, save_orders, update_order_status, is_valid_request_id, update_request, get_order_data_by_id
+from utils import pdf_to_image, escape_md, process_pdf, convert_pdf_to_images, notify_user, cancel_order, save_feedback_to_json, notify_admins, get_new_orders_list, save_order_to_json, get_order_status, load_orders, save_orders, update_order_status, is_valid_request_id, update_request, get_order_data_by_id
 from validators import sanitize_input, is_valid_phone_number, is_valid_address
+from pdf2image import convert_from_path
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -685,11 +687,34 @@ async def process_phone_number(message: Message, state: FSMContext):
 # Обработка кнопки "Стоимость услуг"
 @router.callback_query(F.data == "show_price")
 async def show_price(callback_query: CallbackQuery):
-    prices = load_prices()
-    formatted_prices = format_prices(prices)
-    messages = split_message(formatted_prices)
-    for msg in messages:
-        await callback_query.message.answer(msg, parse_mode="MarkdownV2")
+    # Абсолютный путь к PDF-файлу
+    pdf_path = r'C:\Users\User\Desktop\WorkStation\OutsorcingBot\price_table.pdf'
+    
+    # Абсолютный путь к выходной папке для изображений
+    output_folder = r'C:\Users\User\Desktop\WorkStation\OutsorcingBot\images'
+    
+    # Убедитесь, что выходная папка существует
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Путь к Poppler
+    poppler_path = r'C:\poppler-24.08.0\Library\bin'
+    
+    # Преобразуем PDF в изображения
+    images = convert_from_path(pdf_path, poppler_path=poppler_path)
+    
+    image_paths = []
+    for i, image in enumerate(images):
+        image_path = os.path.join(output_folder, f'page_{i + 1}.png')
+        image.save(image_path, 'PNG')
+        image_paths.append(image_path)
+    
+    # Отправляем каждое изображение пользователю
+    for image_path in image_paths:
+        if os.path.exists(image_path):
+            photo = FSInputFile(image_path)
+            await callback_query.message.answer_photo(photo)
+        else:
+            await callback_query.message.answer("Ошибка: изображение не найдено.")
 
 async def main():
     dp.include_router(router)
