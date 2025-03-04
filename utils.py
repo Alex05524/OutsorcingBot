@@ -1,3 +1,4 @@
+import aiofiles
 import json
 import os
 import logging
@@ -38,26 +39,17 @@ else:
 # Создаём экземпляр Bot
 bot = Bot(token=BOT_TOKEN)
 
-def load_orders():
-    """Загружает заявки из JSON-файла."""
-    logging.info(f"Загрузка заявок из файла: {ORDERS_FILE_PATH}")
-    if os.path.exists(ORDERS_FILE_PATH):
-        try:
-            with open(ORDERS_FILE_PATH, "r", encoding="utf-8") as file:
-                orders = json.load(file)
-                logging.info(f"Загружено заявок: {len(orders)}")
-                return orders
-        except json.JSONDecodeError:
-            logging.error("Ошибка чтения файла orders.json. Файл пуст или поврежден.")
-            return []
-    logging.warning(f"Файл {ORDERS_FILE_PATH} не найден.")
-    return []
+async def load_orders():
+    try:
+        async with aiofiles.open("orders.json", mode="r", encoding="utf-8") as file:
+            contents = await file.read()
+            return json.loads(contents)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
-def save_orders(data: list):
-    """Сохраняет заявки в JSON-файл.""" 
-    with open(ORDERS_FILE_PATH, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=4, ensure_ascii=False)
-    logging.info("Заявки успешно сохранены в файл orders.json")
+async def save_orders(orders):
+    async with aiofiles.open("orders.json", mode="w", encoding="utf-8") as file:
+        await file.write(json.dumps(orders, ensure_ascii=False, indent=4))
 
 async def notify_admins(bot: Bot, message: str):
     admin_ids_str = os.getenv("ADMIN_ID")
@@ -91,8 +83,6 @@ async def notify_order_update(bot: Bot, order_data):
     await notify_admins(bot, message_text)
 
 async def save_order_to_json(bot: Bot, order_data: dict) -> int:
-    """Сохраняет заявку на выезд в JSON и уведомляет администраторов."""
-    logging.info(f"Сохранение заявки: {order_data}")
     orders = load_orders()
     if orders:
         last_order_id = orders[-1].get("id", 0)
@@ -108,9 +98,7 @@ async def save_order_to_json(bot: Bot, order_data: dict) -> int:
         order_data["history"] = []
 
     orders.append(order_data)
-    logging.info(f"Обновленный список заявок: {orders}")
     save_orders(orders)
-    logging.info(f"Заявка #{order_data['id']} успешно сохранена.")
 
     # Уведомление администраторов
     await notify_new_order(bot, order_data)
@@ -121,7 +109,6 @@ def cancel_order(request_id: int):
     orders = load_orders()
     orders = [order for order in orders if order["id"] != request_id]
     save_orders(orders)
-    logging.info(f"Заявка с ID {request_id} была удалена.")
 
 def get_order_status(order_id: int) -> str:
     """Возвращает статус заявки по её ID."""
@@ -135,7 +122,6 @@ def get_order_status(order_id: int) -> str:
             status = order.get("status", "Статус не указан")
             return f"{reason}\n{status}"
 
-    logging.info(f"Заявка #{order_id} не найдена.")
     return "Заявка не найдена"
 
 def update_order(order_id, key, value):
@@ -150,7 +136,6 @@ def update_order(order_id, key, value):
             return current_value, value
         return None, None
     except Exception as e:
-        logging.error(f"Ошибка при работе с JSON: {e}")
         return None, None
 
 def is_valid_request_id(request_id):
@@ -183,11 +168,10 @@ def update_order_status(request_id: int, new_status: str):
     logging.warning(f"Заявка с ID {request_id} не найдена.")
     return None
 
-def get_order_data_by_id(request_id: int):
-    """Возвращает данные заявки по ID."""
-    orders = load_orders()
+async def get_order_data_by_id(order_id):
+    orders = await load_orders()
     for order in orders:
-        if order["id"] == request_id:
+        if order['id'] == order_id:
             return order
     return None
 

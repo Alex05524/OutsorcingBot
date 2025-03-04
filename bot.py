@@ -92,6 +92,11 @@ class LoggingMiddleware(BaseMiddleware):
 # Регистрация мидлвари
 router.message.middleware(LoggingMiddleware())
 
+# Клавиатура с кнопкой "Отменить заявку"
+cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🚫 Отменить заявку", callback_data="cancel_request")]
+])
+
 # Обработка команды /start
 @router.message(Command("start"))
 async def start_command(message: Message):
@@ -282,7 +287,7 @@ async def process_edit_value(message: Message, state: FSMContext):
 # Обработка кнопки "Оформить заявку"
 @router.callback_query(F.data == "apply_request")
 async def create_request(callback_query: CallbackQuery, state: FSMContext):
-    await callback_query.message.edit_text("👤 Пожалуйста, введите ваше полное имя:")
+    await callback_query.message.edit_text("👤 Пожалуйста, введите ваше полное имя:", reply_markup=cancel_keyboard)
     await state.set_state(OrderForm.full_name)
 
 # Обработка ввода полного имени
@@ -290,7 +295,7 @@ async def create_request(callback_query: CallbackQuery, state: FSMContext):
 async def process_full_name(message: Message, state: FSMContext):
     full_name = sanitize_input(message.text.strip())
     await state.update_data(full_name=full_name)
-    await message.answer("🏠 Введите Ваш адрес:")
+    await message.answer("🏠 Введите Ваш адрес:", reply_markup=cancel_keyboard)
     await state.set_state(OrderForm.address)
 
 # Обработка ввода адреса
@@ -308,14 +313,14 @@ async def process_address(message: Message, state: FSMContext):
 @router.callback_query(F.data == 'computer_help')
 async def computer_help(callback_query: CallbackQuery, state: FSMContext):
     await state.update_data(service="🔧 Компьютерная помощь")
-    await callback_query.message.answer("📞 Введите номер телефона:")
+    await callback_query.message.answer("📞 Введите номер телефона:", reply_markup=cancel_keyboard)
     await state.set_state(OrderForm.phone_number)
 
 # Обработка нажатия на кнопку "Монтажные работы"
 @router.callback_query(F.data == 'installation_work')
 async def installation_work(callback_query: CallbackQuery, state: FSMContext):
     await state.update_data(service="🔧 Монтажные работы")
-    await callback_query.message.answer("📞 Введите номер телефона:")
+    await callback_query.message.answer("📞 Введите номер телефона:", reply_markup=cancel_keyboard)
     await state.set_state(OrderForm.phone_number)
 
 # Обработка ввода номера телефона
@@ -326,8 +331,15 @@ async def process_phone_number(message: Message, state: FSMContext):
         await message.answer("🚫 Неверный формат номера телефона. Пожалуйста, введите корректный номер.")
         return
     await state.update_data(phone_number=phone_number)
-    await message.answer("❓ Введите причину обращения:")
+    await message.answer("❓ Введите причину обращения:", reply_markup=cancel_keyboard)
     await state.set_state(OrderForm.reason)
+
+# Обработка кнопки "Отменить заявку" во время оформления
+@router.callback_query(F.data == "cancel_request")
+async def cancel_request_during_creation(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback_query.message.edit_text("🚫 Оформление заявки отменено.")
+    await callback_query.message.answer("📋 Выберите действие из меню:", reply_markup=main_menu_keyboard())
 
 # Обработка ввода причины обращения
 @router.message(StateFilter(OrderForm.reason))
